@@ -1,0 +1,28 @@
+{
+  "name": "Зона захвата",
+  "short_name": "Зона",
+  "description": "Бесплатная .io игра онлайн: захват территории как в paper.io. ПК и телефон, без скачивания — zonex.su",
+  "lang": "ru",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#0372f3",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "/img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/img/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
