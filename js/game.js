@@ -1293,30 +1293,37 @@ function drawCell(z, vis) {
   const half = (z.radius || 11) + 2; // visual only — slightly larger head
   const dir = vis?.dir ?? z.dir ?? 0;
   const size = half * 2;
+  // Trail round-cap nose sits ~trailW/2 ahead of cell — shift square forward
+  // so the tip is centered inside the head and does not poke out the front.
+  const trailW = z.trailWidth || Math.max(8, (z.radius || 11) * 1.55);
+  const fwd = trailW * 0.5;
 
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(dir);
 
   ctx.fillStyle = 'rgba(30, 41, 59, 0.14)';
-  ctx.fillRect(-half + 1.5, -half + 2.5, size, size);
+  ctx.fillRect(-half + fwd + 1.5, -half + 2.5, size, size);
 
   ctx.fillStyle = z.color;
-  ctx.fillRect(-half, -half, size, size);
+  ctx.fillRect(-half + fwd, -half, size, size);
   ctx.strokeStyle = shade(z.color, 0.72);
   ctx.lineWidth = 1.8;
-  ctx.strokeRect(-half, -half, size, size);
+  ctx.strokeRect(-half + fwd, -half, size, size);
 
   ctx.restore();
 
   if (!settings.names || !z.name) return;
   const ink = shade(z.color, 0.55);
+  // Name sits above the shifted square (approx. forward offset in world Y when facing up)
+  const nameX = x + Math.cos(dir) * fwd;
+  const nameY = y + Math.sin(dir) * fwd;
   ctx.save();
   ctx.font = '800 14px Nunito, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = ink;
-  ctx.fillText(z.name, x, y - half - 5);
+  ctx.fillText(z.name, nameX, nameY - half - 5);
   ctx.restore();
 }
 
