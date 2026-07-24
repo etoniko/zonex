@@ -23,12 +23,7 @@ function isLocalHost() {
 /** WebSocket URL for the authority server. */
 export function resolveWsUrl() {
   if (isLocalHost()) {
-    const port = Number(location.port) || 6012;
-    // Same-origin when serving client from the game process; else fixed local port
-    if (location.port && location.hostname) {
-      return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
-    }
-    return `ws://127.0.0.1:${port}`;
+    return 'ws://127.0.0.1:6012';
   }
   return SERVER_WS_URL;
 }
@@ -36,9 +31,6 @@ export function resolveWsUrl() {
 /** HTTP(S) ratings endpoint (paginated JSON). */
 export function resolveRatingsUrl() {
   if (isLocalHost()) {
-    if (location.port && location.hostname) {
-      return `${location.protocol}//${location.host}/ratings`;
-    }
     return 'http://127.0.0.1:6012/ratings';
   }
   return RATINGS_HTTP_URL;

@@ -350,6 +350,20 @@ function connect() {
     } else if (msg.type === 'chat_msg') {
       if (settings.chat) pushChatMessage(msg);
     } else if (msg.type === 'state') {
+      // Client-side cache (like slither nodes): keep fill/board until server syncs them.
+      const prevZones = new Map((state?.zones || []).map((z) => [z.id, z]));
+      for (const z of msg.zones) {
+        if (!z.terrSync) {
+          const prev = prevZones.get(z.id);
+          z.territory = prev?.territory || [];
+          z._smoothTerr = prev?._smoothTerr || null;
+        } else {
+          z._smoothTerr = null; // rebuild on draw
+        }
+      }
+      if (!msg.boardSync) {
+        msg.board = state?.board || [];
+      }
       state = msg;
       absorbState(msg);
       const me = msg.zones.find((z) => z.id === myId);
@@ -713,7 +727,9 @@ function drawDeathMap(territory, color, pct) {
     dctx.fillStyle = hexAlpha(color || '#2f6bff', 0.9);
     dctx.strokeStyle = edge;
     dctx.lineWidth = 2;
-    for (const poly of territory) {
+    dctx.lineJoin = 'round';
+    const soft = smoothTerritory(territory);
+    for (const poly of soft) {
       const outer = poly[0];
       if (!outer?.length) continue;
       dctx.beginPath();
@@ -1141,40 +1157,84 @@ function drawPaperBg(size) {
   ctx.restore();
 }
 
-/** Flat paper cutout — solid fill, thin crisp edge (no jelly glow). */
+/** Flat paper cutout — expects Chaikin-smoothed multipolygon (visual only). */
 function drawTerritory(multi, color) {
   if (!multi?.length) return;
   for (const poly of multi) {
-    const outer = poly[0];
-    if (!outer?.length) continue;
+    if (!poly?.[0]?.length) continue;
     ctx.beginPath();
-    ctx.moveTo(outer[0][0], outer[0][1]);
-    for (let i = 1; i < outer.length; i++) ctx.lineTo(outer[i][0], outer[i][1]);
-    ctx.closePath();
+    for (let r = 0; r < poly.length; r++) {
+      pathRing(ctx, poly[r]);
+    }
     ctx.fillStyle = color;
-    ctx.fill('nonzero');
+    ctx.fill('evenodd');
     ctx.strokeStyle = shade(color, 0.78);
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 2.2;
     ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.stroke();
   }
 }
 
+function pathRing(c, ring) {
+  if (!ring?.length) return;
+  c.moveTo(ring[0][0], ring[0][1]);
+  for (let i = 1; i < ring.length; i++) c.lineTo(ring[i][0], ring[i][1]);
+  c.closePath();
+}
+
+/** Closed-ring Chaikin corner-cutting — rounds jagged wire polygons. */
+function chaikinClosed(ring, iterations = 2) {
+  if (!ring || ring.length < 3) return ring || [];
+  const closed =
+    ring.length > 1 &&
+    ring[0][0] === ring[ring.length - 1][0] &&
+    ring[0][1] === ring[ring.length - 1][1];
+  let pts = closed ? ring.slice(0, -1) : ring.slice();
+  if (pts.length < 3) return ring.slice();
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const n = pts.length;
+    if (n < 3) break;
+    const next = new Array(n * 2);
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      next[k++] = [a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25];
+      next[k++] = [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75];
+    }
+    pts = next;
+  }
+  pts.push([pts[0][0], pts[0][1]]);
+  return pts;
+}
+
+function smoothTerritory(multi) {
+  if (!multi?.length) return [];
+  return multi.map((poly) =>
+    poly.map((ring) => chaikinClosed(ring, 2))
+  );
+}
+
+function territoryForDraw(z) {
+  if (!z?.territory?.length) return [];
+  if (!z._smoothTerr) z._smoothTerr = smoothTerritory(z.territory);
+  return z._smoothTerr;
+}
+
 /**
- * Clip so strokes only paint outside `territory` (evenodd: world − fill).
- * Guarantees own zone stays above own trail — no stub through the fill.
+ * Clip so strokes only paint outside smoothed fill (evenodd: world − fill).
  */
-function clipOutsideTerritory(territory, worldSize) {
-  if (!territory?.length) return;
+function clipOutsideTerritory(smoothMulti, worldSize) {
+  if (!smoothMulti?.length) return;
   ctx.beginPath();
   const pad = 800;
   ctx.rect(-pad, -pad, worldSize + pad * 2, worldSize + pad * 2);
-  for (const poly of territory) {
+  for (const poly of smoothMulti) {
     for (const ring of poly) {
       if (!ring?.length) continue;
-      ctx.moveTo(ring[0][0], ring[0][1]);
-      for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1]);
-      ctx.closePath();
+      pathRing(ctx, ring);
     }
   }
   ctx.clip('evenodd');
@@ -1193,20 +1253,36 @@ function rgbaFromHex(hex, a) {
 function drawTrail(trail, color, radius, trailWidth, fadeTip = 0, startButt = false) {
   if (!trail || trail.length < 2) return;
   const w = trailWidth || Math.max(8, radius * 1.55);
-  const edge = shade(color, 0.72);
+  // Closer to fill color so overlaps under zone/head don't flash a dark seam
+  const edge = shade(color, 0.88);
   const gap = 48;
 
   const strokeSolid = (pts, cap = 'round') => {
     if (pts.length < 2) return;
     ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    pathSmoothPolyline(ctx, pts);
     ctx.strokeStyle = edge;
     ctx.lineWidth = w;
     ctx.lineJoin = 'round';
     ctx.lineCap = cap;
     ctx.stroke();
   };
+
+  /** Midpoint quadratic ribbon — hides downsample corners. */
+  function pathSmoothPolyline(c, pts) {
+    c.moveTo(pts[0][0], pts[0][1]);
+    if (pts.length === 2) {
+      c.lineTo(pts[1][0], pts[1][1]);
+      return;
+    }
+    for (let i = 1; i < pts.length - 1; i++) {
+      const xMid = (pts[i][0] + pts[i + 1][0]) * 0.5;
+      const yMid = (pts[i][1] + pts[i + 1][1]) * 0.5;
+      c.quadraticCurveTo(pts[i][0], pts[i][1], xMid, yMid);
+    }
+    const last = pts[pts.length - 1];
+    c.lineTo(last[0], last[1]);
+  }
 
   /** Last stretch → transparent (hides round cap under / past the square). */
   const strokeFadedTip = (pts, fadeLen, firstCap) => {
@@ -1252,8 +1328,7 @@ function drawTrail(trail, color, radius, trailWidth, fadeTip = 0, startButt = fa
     grad.addColorStop(0.25, edge);
     grad.addColorStop(1, rgbaFromHex(edge, 0));
     ctx.beginPath();
-    ctx.moveTo(tip[0][0], tip[0][1]);
-    for (let i = 1; i < tip.length; i++) ctx.lineTo(tip[i][0], tip[i][1]);
+    pathSmoothPolyline(ctx, tip);
     ctx.strokeStyle = grad;
     ctx.lineWidth = w;
     ctx.lineJoin = 'round';
@@ -1286,36 +1361,47 @@ function drawTrail(trail, color, radius, trailWidth, fadeTip = 0, startButt = fa
   }
 }
 
+/** Client-only visual scale (server hitboxes unchanged). */
+const VIS_HEAD = 0.9;
+const VIS_TRAIL = 0.68;
+
+function visualHeadHalf(z) {
+  return Math.max(7, (z.radius || 11) * VIS_HEAD);
+}
+
+function visualTrailWidth(z) {
+  const base = z.trailWidth || Math.max(8, (z.radius || 11) * 1.55);
+  return Math.max(5.5, base * VIS_TRAIL);
+}
+
 function drawCell(z, vis) {
   if (!(z.radius > 0)) return;
   const x = vis?.x ?? z.cell[0];
   const y = vis?.y ?? z.cell[1];
-  const half = (z.radius || 11) + 2; // visual only — slightly larger head
+  const half = visualHeadHalf(z);
   const dir = vis?.dir ?? z.dir ?? 0;
   const size = half * 2;
-  // Trail round-cap nose sits ~trailW/2 ahead of cell — shift square forward
-  // so the tip is centered inside the head and does not poke out the front.
-  const trailW = z.trailWidth || Math.max(8, (z.radius || 11) * 1.55);
-  const fwd = trailW * 0.5;
+  const trailW = visualTrailWidth(z);
+  // Further forward so the round trail tip stays inside the square
+  const fwd = trailW * 0.85 + half * 0.15;
 
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(dir);
 
   ctx.fillStyle = 'rgba(30, 41, 59, 0.14)';
-  ctx.fillRect(-half + fwd + 1.5, -half + 2.5, size, size);
+  ctx.fillRect(-half + fwd + 1.2, -half + 2, size, size);
 
   ctx.fillStyle = z.color;
   ctx.fillRect(-half + fwd, -half, size, size);
   ctx.strokeStyle = shade(z.color, 0.72);
-  ctx.lineWidth = 1.8;
+  ctx.lineWidth = 1.6;
   ctx.strokeRect(-half + fwd, -half, size, size);
 
   ctx.restore();
 
   if (!settings.names || !z.name) return;
   const ink = shade(z.color, 0.55);
-  // Name sits above the shifted square (approx. forward offset in world Y when facing up)
   const nameX = x + Math.cos(dir) * fwd;
   const nameY = y + Math.sin(dir) * fwd;
   ctx.save();
@@ -1405,14 +1491,36 @@ function updateCamera(meVis, size) {
 function buildDrawTrail(z) {
   const vis = visuals.get(z.id);
   let trail = z.trail;
-  if (z.radius > 0 && vis && trail?.length) {
-    // Solid tip under the square (no fade) — fade caused a white flicker seam
-    trail = trail.slice(0, -1);
-    trail.push([vis.x, vis.y]);
-  }
-  if (!trail || trail.length < 2) return null;
+  const width = visualTrailWidth(z);
   const radius = z.radius > 0 ? z.radius : 11;
-  const width = z.trailWidth || Math.max(8, radius * 1.55);
+  if (!trail || trail.length < 2) return null;
+
+  trail = trail.slice();
+
+  // Pull start INTO own fill so the zone (drawn on top) seals the joint — no white gap.
+  if (trail.length >= 2) {
+    const a = trail[0];
+    const b = trail[1];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    const inset = width * 1.1;
+    trail[0] = [a[0] - (dx / len) * inset, a[1] - (dy / len) * inset];
+  }
+
+  if (z.radius > 0 && vis) {
+    // Drive tip under the square so the head seals the front joint.
+    const dir = vis.dir ?? z.dir ?? 0;
+    const half = visualHeadHalf(z);
+    const fwd = width * 0.85 + half * 0.15;
+    // Tip under square center — matches drawCell forward shift
+    const under = fwd;
+    trail[trail.length - 1] = [
+      vis.x + Math.cos(dir) * under,
+      vis.y + Math.sin(dir) * under,
+    ];
+  }
+
   return { trail, fadeTip: 0, radius, width };
 }
 
@@ -1452,20 +1560,17 @@ function frame(now) {
 
   drawPaperBg(state.size);
 
-  // Fills, then trails clipped outside own fill → own zone is always above own trail.
-  // Trail still paints over empty / foreign land.
-  for (const z of state.zones) {
-    if (!z.alive) continue;
-    drawTerritory(z.territory, z.color);
-  }
+  // Trails under fills: zone + head paint over the overlaps and seal every joint.
+  // (Clip caused white seams against Chaikin-smoothed edges.)
   for (const z of state.zones) {
     if (!z.alive) continue;
     const built = buildDrawTrail(z);
     if (!built) continue;
-    ctx.save();
-    clipOutsideTerritory(z.territory, state.size);
-    drawTrail(built.trail, z.color, built.radius, built.width, built.fadeTip, true);
-    ctx.restore();
+    drawTrail(built.trail, z.color, built.radius, built.width, built.fadeTip, false);
+  }
+  for (const z of state.zones) {
+    if (!z.alive) continue;
+    drawTerritory(territoryForDraw(z), z.color);
   }
   for (const z of state.zones) {
     if (!z.alive) continue;
