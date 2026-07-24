@@ -1560,17 +1560,20 @@ function frame(now) {
 
   drawPaperBg(state.size);
 
-  // Trails under fills: zone + head paint over the overlaps and seal every joint.
-  // (Clip caused white seams against Chaikin-smoothed edges.)
+  // Fills first, then trails clipped only vs OWN fill → trail over foreign/empty,
+  // own zone still covers the stub (trail start is inset into own fill).
+  for (const z of state.zones) {
+    if (!z.alive) continue;
+    drawTerritory(territoryForDraw(z), z.color);
+  }
   for (const z of state.zones) {
     if (!z.alive) continue;
     const built = buildDrawTrail(z);
     if (!built) continue;
-    drawTrail(built.trail, z.color, built.radius, built.width, built.fadeTip, false);
-  }
-  for (const z of state.zones) {
-    if (!z.alive) continue;
-    drawTerritory(territoryForDraw(z), z.color);
+    ctx.save();
+    clipOutsideTerritory(territoryForDraw(z), state.size);
+    drawTrail(built.trail, z.color, built.radius, built.width, built.fadeTip, true);
+    ctx.restore();
   }
   for (const z of state.zones) {
     if (!z.alive) continue;
